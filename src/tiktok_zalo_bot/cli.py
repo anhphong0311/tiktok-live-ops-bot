@@ -8,6 +8,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from .config import ConfigError, load_config, resolve_path, save_config
+from .gmv_service import GmvReportService
+from .gmv_state import GmvStateStore
 from .lock import SingleInstance
 from .logging_setup import configure_logging
 from .models import LiveObservation, LiveState
@@ -45,6 +47,18 @@ def build_parser() -> argparse.ArgumentParser:
     simulate.add_argument("state", choices=[state.value for state in LiveState])
     simulate.add_argument("--room-id")
     simulate.add_argument("--viewers", type=int)
+    gmv_run = commands.add_parser("run-gmv", help="Run hourly LIVE GMV reporter")
+    gmv_run.add_argument("--once", action="store_true", help="Check exactly once")
+    gmv_setup = commands.add_parser(
+        "setup-gmv-zalo", help="Calibrate the GMV report Zalo group"
+    )
+    gmv_setup.add_argument("--group-name", default="GMV - BHBS")
+    gmv_enable = commands.add_parser(
+        "enable-gmv-send", help="Explicitly enable real GMV report sends"
+    )
+    gmv_enable.add_argument("--confirm", help="Required confirmation phrase")
+    commands.add_parser("disable-gmv-send", help="Disable real GMV report sends")
+    commands.add_parser("gmv-status", help="Show GMV reporter state")
     return parser
 
 
@@ -56,7 +70,11 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         config = load_config(args.config)
-        log_value = config["runtime"]["log_path"]
+        log_value = (
+            config.get("gmv_report", {}).get("log_path", "logs/gmv_report.log")
+            if args.command in {"run-gmv", "gmv-status"}
+            else config["runtime"]["log_path"]
+        )
         configure_logging(
             resolve_path(config, log_value),
             str(config["runtime"].get("log_level", "INFO")),
@@ -85,6 +103,15 @@ def main(argv: list[str] | None = None) -> int:
             setup_zalo(config, args.group_name.strip())
             return 0
 
+        if args.command == "setup-gmv-zalo":
+            _require_gmv_config(config)
+            setup_zalo(
+                config,
+                args.group_name.strip(),
+                target="gmv_report.zalo",
+            )
+            return 0
+
         if args.command == "enable-send":
             _enable_send(config, args.confirm)
             return 0
@@ -94,6 +121,21 @@ def main(argv: list[str] | None = None) -> int:
             config["zalo"]["dry_run"] = True
             save_config(config)
             print("Đã tắt gửi thật và bật dry-run.")
+            return 0
+
+        if args.command == "enable-gmv-send":
+            _require_gmv_config(config)
+            _enable_gmv_send(config, args.confirm)
+            return 0
+
+        if args.command == "disable-gmv-send":
+            _require_gmv_config(config)
+            target = config["gmv_report"]["zalo"]
+            target["send_enabled"] = False
+            target["dry_run"] = True
+            config["gmv_report"]["enabled"] = False
+            save_config(config)
+            print("Đã tắt dịch vụ và gửi thật báo cáo GMV.")
             return 0
 
         if args.command == "set-viewer-threshold":
@@ -128,6 +170,14 @@ def main(argv: list[str] | None = None) -> int:
             _print_status(config, store)
             return 0
 
+        if args.command == "gmv-status":
+            _require_gmv_config(config)
+            gmv_store = GmvStateStore(
+                resolve_path(config, config["gmv_report"]["database_path"])
+            )
+            _print_gmv_status(config, gmv_store)
+            return 0
+
         if args.command == "resolve":
             store.resolve_uncertain(args.notification_id, args.outcome)
             print("Đã ghi nhận kết quả thủ công.")
@@ -154,6 +204,22 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     asyncio.run(service.run_forever())
             return 0
+        if args.command == "run-gmv":
+            _require_gmv_config(config)
+            if not config["gmv_report"].get("enabled", False):
+                raise ConfigError("gmv_report.enabled đang tắt")
+            gmv_store = GmvStateStore(
+                resolve_path(config, config["gmv_report"]["database_path"])
+            )
+            gmv_service = GmvReportService(config, gmv_store)
+            lock_path = resolve_path(config, config["gmv_report"]["lock_path"])
+            with SingleInstance(lock_path):
+                if args.once:
+                    gmv_store.recover_inflight()
+                    asyncio.run(gmv_service.run_once())
+                else:
+                    asyncio.run(gmv_service.run_forever())
+            return 0
         return 1
     except (ConfigError, ZaloAutomationError, RuntimeError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
@@ -177,6 +243,26 @@ def _enable_send(config: dict, provided: str | None) -> None:
     print(f"Đã BẬT gửi thật cho nhóm: {zalo['group_name']}")
 
 
+def _require_gmv_config(config: dict) -> None:
+    if not isinstance(config.get("gmv_report"), dict):
+        raise ConfigError("Thiếu section gmv_report trong cấu hình")
+
+
+def _enable_gmv_send(config: dict, provided: str | None) -> None:
+    target = config["gmv_report"]["zalo"]
+    if not target.get("group_confirmed") or not target.get("group_name"):
+        raise ConfigError("Phải chạy setup-gmv-zalo và xác nhận nhóm trước")
+    required = f"BAT GUI THAT: {target['group_name']}"
+    answer = provided if provided is not None else input(f"Nhập '{required}': ").strip()
+    if answer != required:
+        raise ConfigError("Câu xác nhận không khớp; gửi GMV thật vẫn bị tắt")
+    target["send_enabled"] = True
+    target["dry_run"] = False
+    config["gmv_report"]["enabled"] = True
+    save_config(config)
+    print(f"Đã BẬT gửi báo cáo GMV cho nhóm: {target['group_name']}")
+
+
 def _print_status(config: dict, store: StateStore) -> None:
     safe_zalo = {
         "group_name": config["zalo"].get("group_name"),
@@ -190,6 +276,29 @@ def _print_status(config: dict, store: StateStore) -> None:
         json.dumps(config.get("viewer_alert", {}), ensure_ascii=False),
     )
     print("Monitor:", json.dumps(store.get_monitor_state(), ensure_ascii=False))
+    print("Notifications:")
+    for row in store.list_notifications():
+        print(json.dumps(row, ensure_ascii=False))
+
+
+def _print_gmv_status(config: dict, store: GmvStateStore) -> None:
+    report = config["gmv_report"]
+    target = report["zalo"]
+    print(
+        "GMV reporter:",
+        json.dumps(
+            {
+                "enabled": report.get("enabled"),
+                "interval_minutes": report.get("interval_minutes"),
+                "group_name": target.get("group_name"),
+                "group_confirmed": target.get("group_confirmed"),
+                "send_enabled": target.get("send_enabled"),
+                "dry_run": target.get("dry_run"),
+            },
+            ensure_ascii=False,
+        ),
+    )
+    print("Session:", json.dumps(store.get_active_session(), ensure_ascii=False))
     print("Notifications:")
     for row in store.list_notifications():
         print(json.dumps(row, ensure_ascii=False))

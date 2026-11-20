@@ -30,6 +30,35 @@ viewer_alert:
     🕒 Thời gian: {time}
     🔗 {live_url}
 
+gmv_report:
+  enabled: false
+  interval_minutes: 60
+  poll_interval_seconds: 60
+  offline_confirmations: 4
+  error_reminder_minutes: 30
+  dashboard_retry_minutes: 5
+  max_message_chars: 1800
+  max_retry_before_send: 3
+  max_messages_per_cycle: 20
+  database_path: data/gmv_report.db
+  log_path: logs/gmv_report.log
+  lock_path: data/gmv_report.lock
+  dashboard:
+    url_base: https://shop.tiktok.com/workbench/live/overview
+    browser_executable_path: '%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe'
+    browser_profile: Default
+    window_title_contains: TikTok Ecommerce Live Data Screen
+    launch_timeout_seconds: 30
+    load_timeout_seconds: 60
+    read_retry_seconds: 2
+  zalo:
+    group_name: GMV - BHBS
+    group_confirmed: false
+    send_enabled: false
+    dry_run: true
+    header_verify_mode: accessibility
+    header_template_path: data/zalo_gmv_bhbs_header.png
+
 zalo:
   group_name: ""
   group_confirmed: false
@@ -60,4 +89,6 @@ runtime:
   log_level: INFO
   max_retry_before_send: 3
   retry_base_seconds: 15
+  zalo_lock_path: data/zalo_ui.lock
+  zalo_lock_timeout_seconds: 90
 

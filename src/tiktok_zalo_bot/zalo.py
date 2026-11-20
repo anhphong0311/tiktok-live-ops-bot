@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import copy
 import logging
 import os
 import subprocess
@@ -13,6 +14,7 @@ from typing import Any
 from PIL import Image, ImageChops, ImageStat
 
 from .config import resolve_path, save_config
+from .lock import TimedFileLock
 
 logger = logging.getLogger(__name__)
 
@@ -104,36 +106,55 @@ class ZaloAutomation:
             raise ZaloAutomationError("Nhóm Zalo chưa được xác nhận")
         if not str(self.zalo.get("group_name", "")).strip():
             raise ZaloAutomationError("Thiếu zalo.group_name")
-        for key in (
+        verify_mode = str(
+            self.zalo.get("header_verify_mode", "image")
+        ).strip().casefold()
+        required = [
             "back_to_list_point",
             "search_point",
             "search_result_point",
             "message_point",
-            "header_region",
             "window_size",
-        ):
+        ]
+        if verify_mode == "image":
+            required.append("header_region")
+        elif verify_mode != "accessibility":
+            raise ZaloAutomationError(
+                f"Không hỗ trợ header_verify_mode={verify_mode!r}"
+            )
+        for key in required:
             if not self.zalo.get(key):
                 raise ZaloAutomationError(f"Chưa hiệu chuẩn Zalo: thiếu {key}")
         self._configured_executable()
-        template = resolve_path(self.config, self.zalo["header_template_path"])
-        if not template.exists():
-            raise ZaloAutomationError(f"Thiếu ảnh xác minh header: {template}")
+        if verify_mode == "image":
+            template = resolve_path(self.config, self.zalo["header_template_path"])
+            if not template.exists():
+                raise ZaloAutomationError(f"Thiếu ảnh xác minh header: {template}")
         if real_send:
             if not self.zalo.get("send_enabled", False):
                 raise ZaloAutomationError("Gửi thật chưa được bật")
             if self.zalo.get("dry_run", True):
                 raise ZaloAutomationError("dry_run vẫn đang bật")
-            maximum = float(self.zalo.get("header_max_difference", 0.025))
-            changed_maximum = float(
-                self.zalo.get("header_max_changed_ratio", 0.08)
-            )
-            if maximum > 0.04 or changed_maximum > 0.10:
-                raise ZaloAutomationError(
-                    "Ngưỡng xác minh nhóm Zalo không an toàn; không gửi tin"
+            if verify_mode == "image":
+                maximum = float(self.zalo.get("header_max_difference", 0.025))
+                changed_maximum = float(
+                    self.zalo.get("header_max_changed_ratio", 0.08)
                 )
+                if maximum > 0.04 or changed_maximum > 0.10:
+                    raise ZaloAutomationError(
+                        "Ngưỡng xác minh nhóm Zalo không an toàn; không gửi tin"
+                    )
 
     def deliver(self, message: str, *, real_send: bool) -> DeliveryResult:
-        return self._deliver_locked(message, real_send=real_send)
+        lock_path = resolve_path(
+            self.config,
+            str(self.config.get("runtime", {}).get("zalo_lock_path", "data/zalo_ui.lock")),
+        )
+        timeout = float(
+            self.config.get("runtime", {}).get("zalo_lock_timeout_seconds", 90)
+        )
+        with TimedFileLock(lock_path, timeout):
+            return self._deliver_locked(message, real_send=real_send)
 
     def _deliver_locked(self, message: str, *, real_send: bool) -> DeliveryResult:
         self.validate_ready(real_send=real_send)
@@ -202,6 +223,12 @@ class ZaloAutomation:
 
     def _verify_header(self, window: Any, pyautogui: Any) -> None:
         self._assert_foreground(window, "khi xác minh tên nhóm")
+        if (
+            str(self.zalo.get("header_verify_mode", "image")).strip().casefold()
+            == "accessibility"
+        ):
+            self._verify_accessible_header(window)
+            return
         region = self._absolute_region(window, self.zalo["header_region"])
         actual = pyautogui.screenshot(region=region).convert("L")
         template_path = resolve_path(self.config, self.zalo["header_template_path"])
@@ -242,6 +269,55 @@ class ZaloAutomation:
                 f"(difference={mean:.3f}, changed={changed_ratio:.3f}); "
                 "không điền/gửi tin để tránh gửi nhầm nhóm"
             )
+
+    def _verify_accessible_header(self, window: Any) -> None:
+        """Verify the selected recipient from Zalo's exact message-input label."""
+        try:
+            from pywinauto import Desktop
+
+            handle = int(getattr(window, "_hWnd", 0))
+            target = Desktop(backend="uia").window(handle=handle)
+            candidates: list[str] = []
+            for control in target.descendants():
+                try:
+                    automation_id = str(control.element_info.automation_id or "")
+                except Exception:
+                    automation_id = ""
+                if automation_id != "richInput":
+                    continue
+                values = [
+                    getattr(control.element_info, "name", ""),
+                    control.window_text(),
+                ]
+                try:
+                    values.extend(
+                        item.window_text()
+                        for item in control.descendants(control_type="Text")
+                    )
+                except Exception:
+                    pass
+                for value in values:
+                    normalized = " ".join(
+                        str(value or "").replace("\xa0", " ").split()
+                    )
+                    if normalized:
+                        candidates.append(normalized)
+        except Exception as exc:
+            raise ZaloAutomationError(
+                "Không đọc được tên nhóm Zalo qua Windows Accessibility; "
+                "không gửi tin"
+            ) from exc
+
+        expected = " ".join(str(self.zalo["group_name"]).split())
+        exact_label = f"Nhập @, tin nhắn tới {expected}"
+        if exact_label not in candidates:
+            raise ZaloAutomationError(
+                "Tên nhóm Zalo không khớp chính xác "
+                f"'{expected}' qua Windows Accessibility "
+                f"(đã đọc: {candidates or ['không có']}); "
+                "không điền/gửi tin để tránh gửi nhầm nhóm"
+            )
+        logger.info("Verified exact Zalo recipient via accessibility: %s", expected)
 
     def _fill_message(
         self, window: Any, message: str, pyautogui: Any, pyperclip: Any
@@ -463,10 +539,23 @@ class ZaloAutomation:
         return pyautogui, pyperclip
 
 
-def setup_zalo(config: dict[str, Any], group_name: str) -> None:
+def setup_zalo(
+    config: dict[str, Any], group_name: str, *, target: str = "zalo"
+) -> None:
     """Interactive, no-send calibration and explicit group confirmation."""
-    target_config = config["zalo"]
-    automation = ZaloAutomation(config)
+    if target == "zalo":
+        target_config = config["zalo"]
+        working = config
+    elif target == "gmv_report.zalo":
+        target_config = config["gmv_report"]["zalo"]
+        working = copy.deepcopy(config)
+        merged = copy.deepcopy(config["zalo"])
+        merged.update(copy.deepcopy(target_config))
+        working["zalo"] = merged
+    else:
+        raise ZaloAutomationError(f"Không hỗ trợ Zalo target: {target}")
+
+    automation = ZaloAutomation(working)
     pyautogui, _ = automation._ui_modules()
     window = automation._ensure_window()
     automation._activate(window)
@@ -499,7 +588,7 @@ def setup_zalo(config: dict[str, Any], group_name: str) -> None:
     if header_region["width"] < 30 or header_region["height"] < 15:
         raise ZaloAutomationError("Vùng header quá nhỏ hoặc chọn ngược góc")
 
-    template_path = resolve_path(config, config["zalo"]["header_template_path"])
+    template_path = resolve_path(working, working["zalo"]["header_template_path"])
     template_path.parent.mkdir(parents=True, exist_ok=True)
     absolute_region = automation._absolute_region(window, header_region)
     pyautogui.screenshot(region=absolute_region).save(template_path)

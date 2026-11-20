@@ -157,3 +157,47 @@ def test_verify_header_rejects_a_different_group_even_below_old_threshold(
 
     with pytest.raises(ZaloAutomationError, match="không khớp chính xác"):
         automation._verify_header(object(), pyautogui)
+
+
+def test_accessibility_verification_does_not_require_header_image(
+    tmp_path, monkeypatch
+):
+    config = make_config(tmp_path)
+    config["zalo"].update(
+        {
+            "group_name": "GMV - BHBS",
+            "group_confirmed": True,
+            "send_enabled": True,
+            "dry_run": False,
+            "header_verify_mode": "accessibility",
+            "back_to_list_point": {"x": 1, "y": 1},
+            "search_point": {"x": 2, "y": 2},
+            "search_result_point": {"x": 3, "y": 3},
+            "message_point": {"x": 4, "y": 4},
+            "window_size": {"width": 1000, "height": 800},
+        }
+    )
+    automation = ZaloAutomation(config)
+
+    automation.validate_ready(real_send=True)
+
+
+def test_verify_header_routes_to_accessibility_mode(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    config["zalo"].update(
+        {
+            "group_name": "GMV - BHBS",
+            "header_verify_mode": "accessibility",
+        }
+    )
+    automation = ZaloAutomation(config)
+    calls: list[object] = []
+    monkeypatch.setattr(automation, "_assert_foreground", lambda *_: None)
+    monkeypatch.setattr(
+        automation, "_verify_accessible_header", lambda window: calls.append(window)
+    )
+    window = object()
+
+    automation._verify_header(window, SimpleNamespace())
+
+    assert calls == [window]

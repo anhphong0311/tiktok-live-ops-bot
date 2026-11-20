@@ -11,6 +11,8 @@ data/*.db-*
 data/*.lock
 data/zalo_group_header.png
 data/zalo_recipient_header.png
+data/zalo_gmv_bhbs_header.png
+data/gmv_report.db*
 logs/*.log*
 preview/
 

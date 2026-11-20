@@ -14,6 +14,44 @@ Ngày khác muốn đặt 50 mắt thì chạy lại lệnh với `50`. Bot ch�
 .venv\Scripts\python.exe -m tiktok_zalo_bot --config config.yaml disable-viewer-alert
 ```
 
+## Báo cáo GMV theo giờ
+
+Nhánh dịch vụ `run-gmv` theo dõi cùng `room_id` LIVE nhưng chạy độc lập với bot
+thông báo bắt đầu/kết thúc. Trong khi phiên còn LIVE, dịch vụ đọc trang TikTok
+Shop Workbench bằng Microsoft Edge đã đăng nhập và gửi vào nhóm `GMV - BHBS`:
+
+- Attributed GMV cộng dồn từ đầu phiên.
+- Ads Cost và tỷ lệ `Ads Cost / GMV`.
+- Toàn bộ sản phẩm có Attributed GMV lớn hơn 0, gồm tên đầy đủ, ID và GMV;
+  danh sách dài được tách thành nhiều tin nhưng vẫn giữ đủ sản phẩm.
+- Một tổng kết cuối phiên sau khi OFFLINE được xác nhận.
+
+Mốc báo cáo được neo theo giờ bắt đầu hiển thị trên dashboard (60, 120, 180
+phút...), không neo theo thời điểm bot được bật. Khi không đọc được dashboard,
+bot báo lỗi một lần, nhắc lại sau mỗi 30 phút và báo phục hồi khi đọc lại được.
+
+Các lệnh vận hành:
+
+```bat
+.venv\Scripts\python.exe -m tiktok_zalo_bot --config config.yaml gmv-status
+.venv\Scripts\python.exe -m tiktok_zalo_bot --config config.yaml run-gmv --once
+.venv\Scripts\python.exe -m tiktok_zalo_bot --config config.yaml disable-gmv-send
+```
+
+Task nền riêng có tên `TikTok-GMV-Hourly-Reporter` và được cài bằng:
+
+```powershell
+.\scripts\install_gmv_reporter_task.ps1 -Enable -StartNow
+```
+
+Nếu tài khoản Windows không có quyền tạo Scheduled Task, script tự dùng mục
+khởi động cùng đăng nhập của người dùng (`HKCU Run`) và vẫn chạy ẩn bằng
+`pythonw.exe`.
+
+Hai dịch vụ dùng chung `data\zalo_ui.lock`, vì vậy không thể thao tác Zalo cùng
+lúc. Dịch vụ GMV xác minh chính xác tên nhóm qua Windows Accessibility trước khi
+điền và gửi tin.
+
 ## Cài đặt
 
 Mở PowerShell hoặc Command Prompt trong `C:\TikTok-Zalo-Bot`:

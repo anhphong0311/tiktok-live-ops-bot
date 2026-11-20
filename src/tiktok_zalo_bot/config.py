@@ -46,6 +46,28 @@ def load_config(path: str | Path) -> dict[str, Any]:
             raise ConfigError("viewer_alert.recovery_margin phải >= 0")
         if reminder_minutes < 0:
             raise ConfigError("viewer_alert.reminder_minutes phải >= 0")
+    gmv_report = data.get("gmv_report")
+    if gmv_report is not None:
+        if not isinstance(gmv_report, dict):
+            raise ConfigError("gmv_report phải là một section cấu hình")
+        interval_minutes = int(gmv_report.get("interval_minutes", 60))
+        poll_seconds = int(gmv_report.get("poll_interval_seconds", 60))
+        error_reminder = int(gmv_report.get("error_reminder_minutes", 30))
+        retry_minutes = int(gmv_report.get("dashboard_retry_minutes", 5))
+        if interval_minutes < 1:
+            raise ConfigError("gmv_report.interval_minutes phải >= 1")
+        if poll_seconds < 15:
+            raise ConfigError("gmv_report.poll_interval_seconds phải >= 15")
+        if error_reminder < 1:
+            raise ConfigError("gmv_report.error_reminder_minutes phải >= 1")
+        if retry_minutes < 1:
+            raise ConfigError("gmv_report.dashboard_retry_minutes phải >= 1")
+        dashboard = gmv_report.get("dashboard")
+        if not isinstance(dashboard, dict):
+            raise ConfigError("Thiếu section gmv_report.dashboard")
+        target = gmv_report.get("zalo")
+        if not isinstance(target, dict):
+            raise ConfigError("Thiếu section gmv_report.zalo")
     data["_config_path"] = str(config_path)
     data["_base_dir"] = str(config_path.parent)
     return data
