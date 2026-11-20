@@ -68,6 +68,12 @@ def load_config(path: str | Path) -> dict[str, Any]:
         dashboard = gmv_report.get("dashboard")
         if not isinstance(dashboard, dict):
             raise ConfigError("Thiếu section gmv_report.dashboard")
+        refresh_wait = float(dashboard.get("refresh_wait_seconds", 4))
+        max_data_age = int(dashboard.get("max_data_age_minutes", 10))
+        if refresh_wait < 1:
+            raise ConfigError("gmv_report.dashboard.refresh_wait_seconds phải >= 1")
+        if max_data_age < 1:
+            raise ConfigError("gmv_report.dashboard.max_data_age_minutes phải >= 1")
         target = gmv_report.get("zalo")
         if not isinstance(target, dict):
             raise ConfigError("Thiếu section gmv_report.zalo")

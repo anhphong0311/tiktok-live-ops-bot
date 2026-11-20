@@ -1,11 +1,16 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+
+import pytest
 
 from tiktok_zalo_bot.dashboard import (
+    DashboardAccessError,
+    DashboardSnapshot,
     parse_compact_number,
     parse_dashboard_times,
     parse_product_rows,
+    validate_dashboard_freshness,
 )
 
 
@@ -40,3 +45,32 @@ def test_parse_dashboard_time_range() -> None:
 
     assert started == datetime(2026, 11, 20, 2, 31, 4, tzinfo=UTC)
     assert dashboard_time == datetime(2026, 11, 20, 5, 53, 27, tzinfo=UTC)
+
+
+def test_fresh_dashboard_snapshot_is_accepted() -> None:
+    captured = datetime(2026, 11, 20, 8, 30, tzinfo=UTC)
+    value = DashboardSnapshot(
+        room_id="room",
+        captured_at=captured,
+        attributed_gmv_vnd=14_087_634,
+        ads_cost_vnd=201_610,
+        products=(),
+        dashboard_time=captured - timedelta(minutes=4),
+    )
+
+    validate_dashboard_freshness(value, max_age_minutes=10)
+
+
+def test_stale_dashboard_snapshot_is_rejected() -> None:
+    captured = datetime(2026, 11, 20, 8, 48, tzinfo=UTC)
+    value = DashboardSnapshot(
+        room_id="room",
+        captured_at=captured,
+        attributed_gmv_vnd=9_617_153,
+        ads_cost_vnd=166_650,
+        products=(),
+        dashboard_time=datetime(2026, 11, 20, 6, 25, 49, tzinfo=UTC),
+    )
+
+    with pytest.raises(DashboardAccessError, match="dữ liệu cũ"):
+        validate_dashboard_freshness(value, max_age_minutes=10)

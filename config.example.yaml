@@ -52,6 +52,8 @@ gmv_report:
     launch_timeout_seconds: 30
     load_timeout_seconds: 60
     read_retry_seconds: 2
+    refresh_wait_seconds: 4
+    max_data_age_minutes: 10
   zalo:
     group_name: GMV - BHBS
     group_confirmed: false

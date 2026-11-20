@@ -14,6 +14,7 @@ from .dashboard import (
     DashboardSnapshot,
     ProductRevenue,
     TikTokShopDashboardReader,
+    validate_dashboard_freshness,
 )
 from .gmv_state import GmvStateStore, ReportNotification
 from .models import LiveObservation, LiveState, NotificationStatus
@@ -241,7 +242,23 @@ class GmvReportService:
             product_interval,
         )
         first_fetch = not session.get("last_snapshot_json")
-        product_baseline_missing = not session.get("last_product_snapshot_json")
+        previous_product_snapshot = self.store.load_product_snapshot(room_id)
+        product_baseline_missing = previous_product_snapshot is None
+        if previous_product_snapshot is not None:
+            try:
+                validate_dashboard_freshness(
+                    previous_product_snapshot,
+                    max_age_minutes=int(
+                        self.settings.get("dashboard", {}).get(
+                            "max_data_age_minutes", 10
+                        )
+                    ),
+                )
+            except DashboardAccessError:
+                product_baseline_missing = True
+                logger.warning(
+                    "Discarding stale GMV product baseline room=%s", room_id
+                )
         was_dashboard_error = bool(session.get("dashboard_error_active"))
         retry_due = was_dashboard_error and self.store.dashboard_retry_due(
             room_id,
@@ -258,7 +275,6 @@ class GmvReportService:
         if not should_fetch:
             return
 
-        previous_product_snapshot = self.store.load_product_snapshot(room_id)
         snapshot = self._fetch_dashboard(room_id, current)
         if snapshot is None:
             return

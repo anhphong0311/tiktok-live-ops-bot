@@ -33,6 +33,9 @@ sản phẩm nào tăng GMV trong 5 phút, bot không gửi tin sản phẩm. Da
 Mốc báo cáo được neo theo giờ bắt đầu hiển thị trên dashboard (60, 120, 180
 phút...), không neo theo thời điểm bot được bật. Khi không đọc được dashboard,
 bot báo lỗi một lần, nhắc lại sau mỗi 30 phút và báo phục hồi khi đọc lại được.
+Trước mỗi lần đọc, bot làm mới đúng cửa sổ dashboard và chỉ chấp nhận dữ liệu
+có thời gian cập nhật không quá 10 phút. Dashboard đứng hoặc còn số cũ sẽ bị
+từ chối, nên bot không gửi lại GMV sai.
 
 Các lệnh vận hành:
 

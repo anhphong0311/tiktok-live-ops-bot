@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import logging
 import os
 import re
@@ -10,6 +11,9 @@ from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 from urllib.parse import urlencode
+
+from .config import resolve_path
+from .lock import TimedFileLock
 
 logger = logging.getLogger(__name__)
 
@@ -201,6 +205,26 @@ def parse_dashboard_snapshot(
     )
 
 
+def validate_dashboard_freshness(
+    snapshot: DashboardSnapshot, *, max_age_minutes: int
+) -> None:
+    if snapshot.dashboard_time is None:
+        raise DashboardAccessError(
+            "Dashboard không hiển thị thời gian cập nhật; từ chối dùng dữ liệu"
+        )
+    age = snapshot.captured_at - snapshot.dashboard_time
+    maximum = timedelta(minutes=max(1, int(max_age_minutes)))
+    if age > maximum:
+        raise DashboardAccessError(
+            "Dashboard đang giữ dữ liệu cũ "
+            f"({int(age.total_seconds() // 60)} phút chưa cập nhật)"
+        )
+    if age < timedelta(minutes=-5):
+        raise DashboardAccessError(
+            "Thời gian dashboard chạy trước đồng hồ Windows quá 5 phút"
+        )
+
+
 class TikTokShopDashboardReader:
     """Read the authenticated TikTok Shop dashboard through Windows UIA."""
 
@@ -215,18 +239,52 @@ class TikTokShopDashboardReader:
         window = self._ensure_window(room_id)
         timeout = float(self.settings.get("load_timeout_seconds", 60))
         retry = float(self.settings.get("read_retry_seconds", 2))
-        deadline = time.monotonic() + timeout
-        last_error: Exception | None = None
-        while time.monotonic() < deadline:
+        lock_path = resolve_path(
+            self.config,
+            str(
+                self.config.get("runtime", {}).get(
+                    "zalo_lock_path", "data/zalo_ui.lock"
+                )
+            ),
+        )
+        lock_timeout = float(
+            self.config.get("runtime", {}).get("zalo_lock_timeout_seconds", 90)
+        )
+        with TimedFileLock(lock_path, lock_timeout):
+            previous_foreground = self._foreground_hwnd()
             try:
-                texts, rows = self._read_window(window)
-                snapshot = parse_dashboard_snapshot(room_id, texts, rows)
-                self._active_room_id = room_id
-                self._window = window
-                return snapshot
-            except (DashboardAccessError, RuntimeError, OSError) as exc:
-                last_error = exc
-                time.sleep(retry)
+                self._refresh_window(window, room_id)
+                deadline = time.monotonic() + timeout
+                last_error: Exception | None = None
+                while time.monotonic() < deadline:
+                    try:
+                        texts, rows = self._read_window(window, room_id)
+                        snapshot = parse_dashboard_snapshot(room_id, texts, rows)
+                        validate_dashboard_freshness(
+                            snapshot,
+                            max_age_minutes=int(
+                                self.settings.get("max_data_age_minutes", 10)
+                            ),
+                        )
+                        self._active_room_id = room_id
+                        self._window = window
+                        logger.info(
+                            "Read fresh GMV dashboard room=%s dashboard_time=%s "
+                            "gmv=%s ads=%s products=%s",
+                            room_id,
+                            snapshot.dashboard_time.isoformat()
+                            if snapshot.dashboard_time
+                            else None,
+                            snapshot.attributed_gmv_vnd,
+                            snapshot.ads_cost_vnd,
+                            len(snapshot.products),
+                        )
+                        return snapshot
+                    except (DashboardAccessError, RuntimeError, OSError) as exc:
+                        last_error = exc
+                        time.sleep(retry)
+            finally:
+                self._restore_foreground(window, previous_foreground)
         detail = f": {last_error}" if last_error else ""
         raise DashboardAccessError(
             "Không đọc được dashboard TikTok Shop; hãy kiểm tra Edge đã đăng nhập"
@@ -236,7 +294,10 @@ class TikTokShopDashboardReader:
     def _ensure_window(self, room_id: str) -> Any:
         if self._window is not None and self._active_room_id == room_id:
             try:
-                if self._window.exists(timeout=0.5):
+                if (
+                    self._window.exists(timeout=0.5)
+                    and room_id in self._window_url(self._window)
+                ):
                     return self._window
             except Exception:
                 self._window = None
@@ -322,13 +383,60 @@ class TikTokShopDashboardReader:
                     return value
         return ""
 
-    def _read_window(self, window: Any) -> tuple[list[str], list[list[str]]]:
+    def _refresh_window(self, window: Any, room_id: str) -> None:
+        if room_id not in self._window_url(window):
+            raise DashboardAccessError(
+                "Cửa sổ dashboard không còn đúng room LIVE cần theo dõi"
+            )
+        try:
+            hwnd = int(window.handle)
+            window.set_focus()
+            time.sleep(0.25)
+            if self._foreground_hwnd() != hwnd:
+                raise DashboardAccessError(
+                    "Không thể đưa dashboard lên trước để làm mới an toàn"
+                )
+            window.type_keys("^r", set_foreground=False)
+            logger.info("Refreshing GMV dashboard room=%s hwnd=%s", room_id, hwnd)
+            time.sleep(float(self.settings.get("refresh_wait_seconds", 4)))
+        except DashboardAccessError:
+            raise
+        except Exception as exc:
+            raise DashboardAccessError(
+                f"Không thể làm mới dashboard an toàn: {type(exc).__name__}: {exc}"
+            ) from exc
+
+    @staticmethod
+    def _foreground_hwnd() -> int:
+        try:
+            return int(ctypes.windll.user32.GetForegroundWindow())
+        except Exception:
+            return 0
+
+    def _restore_foreground(self, window: Any, previous_hwnd: int) -> None:
+        if not previous_hwnd:
+            return
+        try:
+            dashboard_hwnd = int(window.handle)
+            if (
+                previous_hwnd != dashboard_hwnd
+                and self._foreground_hwnd() == dashboard_hwnd
+                and ctypes.windll.user32.IsWindow(previous_hwnd)
+            ):
+                ctypes.windll.user32.SetForegroundWindow(previous_hwnd)
+        except Exception:
+            logger.debug("Could not restore foreground window", exc_info=True)
+
+    def _read_window(
+        self, window: Any, room_id: str
+    ) -> tuple[list[str], list[list[str]]]:
         try:
             documents = window.descendants(control_type="Document")
             document = next(
                 item
                 for item in documents
                 if "shop.tiktok.com/workbench/live/overview" in self._node_value(item)
+                and room_id in self._node_value(item)
             )
         except (Exception, StopIteration) as exc:
             raise DashboardAccessError(
