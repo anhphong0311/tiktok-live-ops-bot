@@ -1,0 +1,16 @@
+.venv/
+.split-backup/
+.tmp/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+*.egg-info/
+config.yaml
+data/*.db
+data/*.db-*
+data/*.lock
+data/zalo_group_header.png
+data/zalo_recipient_header.png
+logs/*.log*
+preview/
+

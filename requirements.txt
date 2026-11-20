@@ -1,0 +1,9 @@
+TikTokLive==7.0.1
+PyAutoGUI==0.9.54
+PyGetWindow==0.0.9
+pyperclip==1.11.0
+PyYAML==6.0.3
+Pillow==12.0.0
+tzdata==2025.2
+pytest==8.4.2
+

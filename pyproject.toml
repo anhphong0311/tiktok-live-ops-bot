@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tiktok-zalo-bot"
+version = "1.0.0"
+description = "Safe TikTok LIVE to Zalo PC notification bot"
+requires-python = ">=3.11"
+
+[project.scripts]
+tiktok-zalo-bot = "tiktok_zalo_bot.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --basetemp=.tmp/pytest"
+

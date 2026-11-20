@@ -1,0 +1,63 @@
+tiktok:
+  username: bohiubimsua
+  live_url: https://www.tiktok.com/@bohiubimsua/live
+  poll_interval_seconds: 15
+  request_timeout_seconds: 20
+
+notification:
+  timezone: Asia/Bangkok
+  template: |-
+    🔴 BỐ HÍU BỈM SỮA ĐÃ LÊN LIVE!
+    🛒 Deal mẹ & bé đang diễn ra.
+    🕒 Thời gian: {time}
+    🔗 {live_url}
+  end_template: |-
+    ⚫ BỐ HÍU BỈM SỮA ĐÃ KẾT THÚC LIVE!
+    🕒 Bắt đầu: {start_time}
+    🕒 Kết thúc: {end_time}
+    ⏱️ Thời lượng: {duration}
+
+viewer_alert:
+  enabled: false
+  minimum_viewers: 130
+  confirmations: 2
+  recovery_margin: 10
+  reminder_minutes: 15
+  template: |-
+    ⚠️ MẮT LIVE ĐANG THẤP!
+    👁️ Hiện tại: {viewer_count} mắt
+    🎯 Mức tối thiểu: {minimum_viewers} mắt
+    🕒 Thời gian: {time}
+    🔗 {live_url}
+
+zalo:
+  group_name: ""
+  group_confirmed: false
+  send_enabled: false
+  dry_run: true
+  executable_path: '%LOCALAPPDATA%\Programs\Zalo\Zalo.exe'
+  window_title_exact: Zalo
+  launch_timeout_seconds: 30
+  foreground_timeout_seconds: 5
+  back_to_list_point: null
+  search_point: null
+  search_result_point: null
+  message_point: null
+  header_region: null
+  window_size: null
+  header_template_path: data/zalo_group_header.png
+  header_max_difference: 0.025
+  header_max_changed_ratio: 0.08
+  header_pixel_difference_threshold: 20
+  header_min_template_stddev: 10.0
+  search_wait_seconds: 2.0
+  navigation_wait_seconds: 1.0
+  paste_wait_seconds: 0.8
+
+runtime:
+  database_path: data/state.db
+  log_path: logs/bot.log
+  log_level: INFO
+  max_retry_before_send: 3
+  retry_base_seconds: 15
+
