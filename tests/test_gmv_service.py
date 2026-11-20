@@ -137,13 +137,17 @@ def test_hourly_report_is_anchored_to_live_start(tmp_path: Path) -> None:
         )
     )
 
-    assert len(zalo.messages) == 1
-    assert "MỐC 1 GIỜ" in zalo.messages[0]
-    assert "8.533.273đ" in zalo.messages[0]
-    assert "1.84%" in zalo.messages[0]
-    assert "Product A" not in zalo.messages[0]
-    assert "SẢN PHẨM" not in zalo.messages[0]
-    assert store.list_notifications()[0]["status"] == NotificationStatus.SENT.value
+    assert len(zalo.messages) == 2
+    assert "BÁO CÁO SẢN PHẨM 5 PHÚT" in zalo.messages[0]
+    assert "MỐC 1 GIỜ" in zalo.messages[1]
+    assert "8.533.273đ" in zalo.messages[1]
+    assert "1.84%" in zalo.messages[1]
+    assert "Product A" not in zalo.messages[1]
+    assert "SẢN PHẨM" not in zalo.messages[1]
+    assert all(
+        row["status"] == NotificationStatus.SENT.value
+        for row in store.list_notifications()
+    )
 
 
 def test_final_report_is_sent_after_confirmed_offline(tmp_path: Path) -> None:
@@ -236,7 +240,7 @@ def test_product_alert_contains_only_products_that_grew_in_five_minutes(
 
     assert len(zalo.messages) == 1
     message = zalo.messages[0]
-    assert "TRONG 5 PHÚT" in message
+    assert "BÁO CÁO SẢN PHẨM 5 PHÚT" in message
     assert "Product A" in message
     assert "+50.000đ" in message
     assert "Product C" in message
@@ -245,10 +249,10 @@ def test_product_alert_contains_only_products_that_grew_in_five_minutes(
     assert "Ads Cost" not in message
     notifications = store.list_notifications()
     assert len(notifications) == 1
-    assert notifications[0]["event_type"] == "PRODUCT_DELTA"
+    assert notifications[0]["event_type"] == "PRODUCT_REPORT"
 
 
-def test_product_check_sends_nothing_when_no_product_gmv_grows(
+def test_product_check_reports_when_no_product_gmv_grows(
     tmp_path: Path,
 ) -> None:
     started = datetime(2026, 11, 20, 2, 31, tzinfo=UTC)
@@ -272,8 +276,12 @@ def test_product_check_sends_nothing_when_no_product_gmv_grows(
         )
     )
 
-    assert zalo.messages == []
-    assert store.list_notifications() == []
+    assert len(zalo.messages) == 1
+    assert "BÁO CÁO SẢN PHẨM 5 PHÚT" in zalo.messages[0]
+    assert "Không có sản phẩm phát sinh GMV trong 5 phút" in zalo.messages[0]
+    notifications = store.list_notifications()
+    assert len(notifications) == 1
+    assert notifications[0]["event_type"] == "PRODUCT_REPORT"
 
 
 def test_long_product_delta_list_is_split_without_dropping_products() -> None:

@@ -284,7 +284,7 @@ class GmvStateStore:
                     db,
                     room_id,
                     f"product:{room_id}:{sequence}",
-                    "PRODUCT_DELTA",
+                    "PRODUCT_REPORT",
                     messages,
                 )
             next_report_raw = row["next_product_report_at"]

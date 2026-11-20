@@ -84,19 +84,19 @@ def build_product_delta_messages(
     window_minutes: int = 5,
 ) -> list[str]:
     deltas = product_revenue_deltas(previous, current)
-    if not deltas:
-        return []
-
     local_start = previous.captured_at.astimezone(timezone).strftime(
         "%d/%m/%Y %H:%M:%S"
     )
     local_report = report_time.astimezone(timezone).strftime("%d/%m/%Y %H:%M:%S")
     heading = (
-        f"🛒 SẢN PHẨM ĐANG RA TIỀN TRONG {max(1, window_minutes)} PHÚT\n"
+        f"🛒 BÁO CÁO SẢN PHẨM {max(1, window_minutes)} PHÚT\n"
         f"🕒 Từ: {local_start}\n"
-        f"🕒 Đến: {local_report}\n"
-        f"📦 Sản phẩm phát sinh GMV: {len(deltas)}"
+        f"🕒 Đến: {local_report}"
     )
+    if not deltas:
+        return [heading + "\n📦 Không có sản phẩm phát sinh GMV trong 5 phút."]
+
+    heading += f"\n📦 Sản phẩm đang ra tiền: {len(deltas)}"
     blocks = [
         _product_delta_block(index, item) for index, item in enumerate(deltas, 1)
     ]
@@ -311,14 +311,12 @@ class GmvReportService:
                 current,
                 product_interval,
             )
-            if product_messages:
-                logger.info(
-                    "Queued GMV product delta room=%s parts=%s",
-                    room_id,
-                    len(product_messages),
-                )
-            else:
-                logger.info("No GMV product delta in current window room=%s", room_id)
+            logger.info(
+                "Queued GMV product report room=%s parts=%s products_with_delta=%s",
+                room_id,
+                len(product_messages),
+                len(product_revenue_deltas(previous_product_snapshot, snapshot)),
+            )
 
         if self.store.hourly_due(room_id, current):
             started_at = datetime.fromisoformat(str(session["started_at"]))
