@@ -59,6 +59,8 @@ class GmvStateStore:
                     started_at TEXT NOT NULL,
                     next_report_at TEXT NOT NULL,
                     report_sequence INTEGER NOT NULL DEFAULT 0,
+                    next_product_report_at TEXT,
+                    product_sequence INTEGER NOT NULL DEFAULT 0,
                     live_state TEXT NOT NULL DEFAULT 'LIVE',
                     offline_streak INTEGER NOT NULL DEFAULT 0,
                     ended_at TEXT,
@@ -67,6 +69,7 @@ class GmvStateStore:
                     last_error_notice_at TEXT,
                     last_dashboard_error TEXT,
                     last_snapshot_json TEXT,
+                    last_product_snapshot_json TEXT,
                     last_dashboard_attempt_at TEXT,
                     updated_at TEXT NOT NULL
                 );
@@ -90,30 +93,64 @@ class GmvStateStore:
                 ON gmv_outbox(status, id);
                 """
             )
+            self._ensure_column(db, "next_product_report_at", "TEXT")
+            self._ensure_column(
+                db, "product_sequence", "INTEGER NOT NULL DEFAULT 0"
+            )
+            self._ensure_column(db, "last_product_snapshot_json", "TEXT")
+
+    @staticmethod
+    def _ensure_column(
+        db: sqlite3.Connection, column_name: str, definition: str
+    ) -> None:
+        columns = {
+            str(row["name"])
+            for row in db.execute("PRAGMA table_info(gmv_sessions)").fetchall()
+        }
+        if column_name not in columns:
+            db.execute(
+                f"ALTER TABLE gmv_sessions ADD COLUMN {column_name} {definition}"
+            )
 
     def observe_live(
-        self, room_id: str, observed_at: datetime, interval_minutes: int
+        self,
+        room_id: str,
+        observed_at: datetime,
+        interval_minutes: int,
+        product_interval_minutes: int = 5,
     ) -> dict[str, object]:
         room_id = str(room_id)
         observed = observed_at.astimezone(UTC)
         next_report = observed + timedelta(minutes=max(1, interval_minutes))
+        next_product = observed + timedelta(
+            minutes=max(1, product_interval_minutes)
+        )
         now = _utc_iso()
         with self._connect() as db:
             db.execute(
                 """
                 INSERT OR IGNORE INTO gmv_sessions (
-                    room_id, started_at, next_report_at, updated_at
-                ) VALUES (?, ?, ?, ?)
+                    room_id, started_at, next_report_at,
+                    next_product_report_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?)
                 """,
-                (room_id, _utc_iso(observed), _utc_iso(next_report), now),
+                (
+                    room_id,
+                    _utc_iso(observed),
+                    _utc_iso(next_report),
+                    _utc_iso(next_product),
+                    now,
+                ),
             )
             db.execute(
                 """
                 UPDATE gmv_sessions
-                SET live_state = 'LIVE', offline_streak = 0, updated_at = ?
+                SET live_state = 'LIVE', offline_streak = 0,
+                    next_product_report_at = COALESCE(next_product_report_at, ?),
+                    updated_at = ?
                 WHERE room_id = ? AND final_enqueued = 0
                 """,
-                (now, room_id),
+                (_utc_iso(next_product), now, room_id),
             )
             row = db.execute(
                 "SELECT * FROM gmv_sessions WHERE room_id = ?", (room_id,)
@@ -212,6 +249,68 @@ class GmvStateStore:
             and row["live_state"] == "LIVE"
             and now.astimezone(UTC) >= datetime.fromisoformat(str(row["next_report_at"]))
         )
+
+    def product_due(self, room_id: str, now: datetime) -> bool:
+        row = self.get_session(room_id)
+        next_report = row.get("next_product_report_at") if row else None
+        return bool(
+            row
+            and row["live_state"] == "LIVE"
+            and next_report
+            and now.astimezone(UTC) >= datetime.fromisoformat(str(next_report))
+        )
+
+    def complete_product_check(
+        self,
+        room_id: str,
+        snapshot: DashboardSnapshot,
+        messages: Sequence[str],
+        now: datetime,
+        interval_minutes: int,
+    ) -> int:
+        interval = timedelta(minutes=max(1, interval_minutes))
+        now_utc = now.astimezone(UTC)
+        payload = self._snapshot_payload(snapshot)
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT * FROM gmv_sessions WHERE room_id = ?", (room_id,)
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"Không có phiên room_id={room_id}")
+            sequence = int(row["product_sequence"] or 0)
+            if messages:
+                sequence += 1
+                self._insert_messages(
+                    db,
+                    room_id,
+                    f"product:{room_id}:{sequence}",
+                    "PRODUCT_DELTA",
+                    messages,
+                )
+            next_report_raw = row["next_product_report_at"]
+            next_report = (
+                datetime.fromisoformat(str(next_report_raw))
+                if next_report_raw
+                else now_utc + interval
+            )
+            while next_report <= now_utc:
+                next_report += interval
+            db.execute(
+                """
+                UPDATE gmv_sessions
+                SET product_sequence = ?, next_product_report_at = ?,
+                    last_product_snapshot_json = ?, updated_at = ?
+                WHERE room_id = ?
+                """,
+                (
+                    sequence,
+                    _utc_iso(next_report),
+                    json.dumps(payload, ensure_ascii=False),
+                    _utc_iso(),
+                    room_id,
+                ),
+            )
+        return sequence
 
     def enqueue_hourly(
         self,
@@ -393,14 +492,7 @@ class GmvStateStore:
             )
 
     def save_snapshot(self, snapshot: DashboardSnapshot) -> None:
-        payload = asdict(snapshot)
-        payload["captured_at"] = _utc_iso(snapshot.captured_at)
-        payload["started_at"] = (
-            _utc_iso(snapshot.started_at) if snapshot.started_at else None
-        )
-        payload["dashboard_time"] = (
-            _utc_iso(snapshot.dashboard_time) if snapshot.dashboard_time else None
-        )
+        payload = self._snapshot_payload(snapshot)
         with self._connect() as db:
             db.execute(
                 """
@@ -415,6 +507,29 @@ class GmvStateStore:
         if not row or not row.get("last_snapshot_json"):
             return None
         payload = json.loads(str(row["last_snapshot_json"]))
+        return self._snapshot_from_payload(payload)
+
+    def load_product_snapshot(self, room_id: str) -> DashboardSnapshot | None:
+        row = self.get_session(room_id)
+        if not row or not row.get("last_product_snapshot_json"):
+            return None
+        payload = json.loads(str(row["last_product_snapshot_json"]))
+        return self._snapshot_from_payload(payload)
+
+    @staticmethod
+    def _snapshot_payload(snapshot: DashboardSnapshot) -> dict[str, object]:
+        payload = asdict(snapshot)
+        payload["captured_at"] = _utc_iso(snapshot.captured_at)
+        payload["started_at"] = (
+            _utc_iso(snapshot.started_at) if snapshot.started_at else None
+        )
+        payload["dashboard_time"] = (
+            _utc_iso(snapshot.dashboard_time) if snapshot.dashboard_time else None
+        )
+        return payload
+
+    @staticmethod
+    def _snapshot_from_payload(payload: dict[str, object]) -> DashboardSnapshot:
         return DashboardSnapshot(
             room_id=str(payload["room_id"]),
             captured_at=datetime.fromisoformat(payload["captured_at"]),

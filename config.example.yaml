@@ -33,6 +33,7 @@ viewer_alert:
 gmv_report:
   enabled: false
   interval_minutes: 60
+  product_interval_minutes: 5
   poll_interval_seconds: 60
   offline_confirmations: 4
   error_reminder_minutes: 30

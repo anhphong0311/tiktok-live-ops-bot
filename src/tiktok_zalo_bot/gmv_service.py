@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Sequence
 from zoneinfo import ZoneInfo
@@ -33,11 +34,96 @@ def format_duration(started_at: datetime, ended_at: datetime) -> str:
     return f"{hours} giờ {minutes} phút {seconds} giây"
 
 
-def _product_block(index: int, product: ProductRevenue) -> str:
-    return (
-        f"{index}. {product.name}\n"
-        f"🆔 {product.product_id} | 💵 {format_vnd(product.attributed_gmv_vnd)}"
+@dataclass(frozen=True)
+class ProductRevenueDelta:
+    product: ProductRevenue
+    attributed_gmv_delta_vnd: int
+
+
+def product_revenue_deltas(
+    previous: DashboardSnapshot, current: DashboardSnapshot
+) -> list[ProductRevenueDelta]:
+    previous_gmv = {
+        product.product_id: product.attributed_gmv_vnd
+        for product in previous.products
+    }
+    deltas = [
+        ProductRevenueDelta(
+            product=product,
+            attributed_gmv_delta_vnd=(
+                product.attributed_gmv_vnd - previous_gmv.get(product.product_id, 0)
+            ),
+        )
+        for product in current.products
+    ]
+    return sorted(
+        (item for item in deltas if item.attributed_gmv_delta_vnd > 0),
+        key=lambda item: item.attributed_gmv_delta_vnd,
+        reverse=True,
     )
+
+
+def _product_delta_block(index: int, item: ProductRevenueDelta) -> str:
+    product = item.product
+    return (
+        f"{index}. +{format_vnd(item.attributed_gmv_delta_vnd)} | "
+        f"Hiện tại: {format_vnd(product.attributed_gmv_vnd)}\n"
+        f"{product.name}\n"
+        f"🆔 {product.product_id}"
+    )
+
+
+def build_product_delta_messages(
+    previous: DashboardSnapshot,
+    current: DashboardSnapshot,
+    *,
+    report_time: datetime,
+    timezone: ZoneInfo,
+    max_message_chars: int,
+    window_minutes: int = 5,
+) -> list[str]:
+    deltas = product_revenue_deltas(previous, current)
+    if not deltas:
+        return []
+
+    local_start = previous.captured_at.astimezone(timezone).strftime(
+        "%d/%m/%Y %H:%M:%S"
+    )
+    local_report = report_time.astimezone(timezone).strftime("%d/%m/%Y %H:%M:%S")
+    heading = (
+        f"🛒 SẢN PHẨM ĐANG RA TIỀN TRONG {max(1, window_minutes)} PHÚT\n"
+        f"🕒 Từ: {local_start}\n"
+        f"🕒 Đến: {local_report}\n"
+        f"📦 Sản phẩm phát sinh GMV: {len(deltas)}"
+    )
+    blocks = [
+        _product_delta_block(index, item) for index, item in enumerate(deltas, 1)
+    ]
+    limit = max(500, int(max_message_chars))
+    joined = heading + "\n\n" + "\n\n".join(blocks)
+    if len(joined) <= limit:
+        return [joined]
+
+    messages: list[str] = []
+    current_blocks: list[str] = []
+    current_length = 0
+    reserve = len(heading) + 40
+    for block in blocks:
+        addition = len(block) + (2 if current_blocks else 0)
+        if current_blocks and current_length + addition > limit - reserve:
+            messages.append("\n\n".join(current_blocks))
+            current_blocks = []
+            current_length = 0
+        current_blocks.append(block)
+        current_length += len(block) + (2 if len(current_blocks) > 1 else 0)
+    if current_blocks:
+        messages.append("\n\n".join(current_blocks))
+
+    total = len(messages)
+    return [
+        f"{heading}\n📄 Phần {index}/{total}\n\n{message}"
+        for index, message in enumerate(messages, 1)
+    ]
 
 
 def build_report_messages(
@@ -69,46 +155,15 @@ def build_report_messages(
         title = f"📊 BÁO CÁO LIVE - MỐC {elapsed_hours} GIỜ"
         timing = f"🕒 Bắt đầu: {local_start}\n🕒 Báo cáo: {local_report}"
 
-    summary = (
-        f"{title}\n"
-        f"{timing}\n"
-        f"💰 Attributed GMV: {format_vnd(snapshot.attributed_gmv_vnd)}\n"
-        f"📢 Ads Cost: {format_vnd(snapshot.ads_cost_vnd)}\n"
-        f"📈 Ads Cost/GMV: {ratio:.2f}%\n"
-        f"🛒 Sản phẩm có GMV > 0: {len(snapshot.products)}"
-    )
-    if not snapshot.products:
-        return [summary + "\nKhông có sản phẩm phát sinh doanh số."]
-
-    limit = max(500, int(max_message_chars))
-    blocks = [_product_block(index, product) for index, product in enumerate(snapshot.products, 1)]
-    joined = summary + "\n\n" + "\n\n".join(blocks)
-    if len(joined) <= limit:
-        return [joined]
-
-    product_chunks: list[list[str]] = []
-    current: list[str] = []
-    current_length = 0
-    reserve = 80
-    for block in blocks:
-        addition = len(block) + (2 if current else 0)
-        if current and current_length + addition > limit - reserve:
-            product_chunks.append(current)
-            current = []
-            current_length = 0
-        current.append(block)
-        current_length += len(block) + (2 if len(current) > 1 else 0)
-    if current:
-        product_chunks.append(current)
-
-    messages = [summary]
-    total = len(product_chunks)
-    for index, chunk in enumerate(product_chunks, 1):
-        messages.append(
-            f"📦 SẢN PHẨM CÓ DOANH SỐ — PHẦN {index}/{total}\n\n"
-            + "\n\n".join(chunk)
+    return [
+        (
+            f"{title}\n"
+            f"{timing}\n"
+            f"💰 Attributed GMV: {format_vnd(snapshot.attributed_gmv_vnd)}\n"
+            f"📢 Ads Cost: {format_vnd(snapshot.ads_cost_vnd)}\n"
+            f"📈 Ads Cost/GMV: {ratio:.2f}%"
         )
-    return messages
+    ]
 
 
 def build_gmv_zalo_config(config: dict[str, Any]) -> dict[str, Any]:
@@ -178,17 +233,32 @@ class GmvReportService:
     ) -> None:
         room_id = str(observation.room_id)
         interval = int(self.settings.get("interval_minutes", 60))
-        session = self.store.observe_live(room_id, observation.checked_at, interval)
+        product_interval = int(self.settings.get("product_interval_minutes", 5))
+        session = self.store.observe_live(
+            room_id,
+            observation.checked_at,
+            interval,
+            product_interval,
+        )
         first_fetch = not session.get("last_snapshot_json")
-        retry_due = bool(session.get("dashboard_error_active")) and self.store.dashboard_retry_due(
+        product_baseline_missing = not session.get("last_product_snapshot_json")
+        was_dashboard_error = bool(session.get("dashboard_error_active"))
+        retry_due = was_dashboard_error and self.store.dashboard_retry_due(
             room_id,
             current,
             int(self.settings.get("dashboard_retry_minutes", 5)),
         )
         hourly_due = self.store.hourly_due(room_id, current)
-        if not (first_fetch or retry_due or hourly_due):
+        product_due = self.store.product_due(room_id, current)
+        should_fetch = (
+            retry_due
+            if was_dashboard_error
+            else first_fetch or product_baseline_missing or product_due or hourly_due
+        )
+        if not should_fetch:
             return
 
+        previous_product_snapshot = self.store.load_product_snapshot(room_id)
         snapshot = self._fetch_dashboard(room_id, current)
         if snapshot is None:
             return
@@ -199,6 +269,40 @@ class GmvReportService:
             )
         else:
             session = self.store.get_session(room_id) or session
+
+        if product_baseline_missing or was_dashboard_error:
+            self.store.complete_product_check(
+                room_id,
+                snapshot,
+                [],
+                current,
+                product_interval,
+            )
+            logger.info("Stored GMV product baseline room=%s", room_id)
+        elif product_due and previous_product_snapshot is not None:
+            product_messages = build_product_delta_messages(
+                previous_product_snapshot,
+                snapshot,
+                report_time=current,
+                timezone=self.timezone,
+                max_message_chars=int(self.settings.get("max_message_chars", 1800)),
+                window_minutes=product_interval,
+            )
+            self.store.complete_product_check(
+                room_id,
+                snapshot,
+                product_messages,
+                current,
+                product_interval,
+            )
+            if product_messages:
+                logger.info(
+                    "Queued GMV product delta room=%s parts=%s",
+                    room_id,
+                    len(product_messages),
+                )
+            else:
+                logger.info("No GMV product delta in current window room=%s", room_id)
 
         if self.store.hourly_due(room_id, current):
             started_at = datetime.fromisoformat(str(session["started_at"]))

@@ -51,11 +51,14 @@ def load_config(path: str | Path) -> dict[str, Any]:
         if not isinstance(gmv_report, dict):
             raise ConfigError("gmv_report phải là một section cấu hình")
         interval_minutes = int(gmv_report.get("interval_minutes", 60))
+        product_interval = int(gmv_report.get("product_interval_minutes", 5))
         poll_seconds = int(gmv_report.get("poll_interval_seconds", 60))
         error_reminder = int(gmv_report.get("error_reminder_minutes", 30))
         retry_minutes = int(gmv_report.get("dashboard_retry_minutes", 5))
         if interval_minutes < 1:
             raise ConfigError("gmv_report.interval_minutes phải >= 1")
+        if product_interval < 1:
+            raise ConfigError("gmv_report.product_interval_minutes phải >= 1")
         if poll_seconds < 15:
             raise ConfigError("gmv_report.poll_interval_seconds phải >= 15")
         if error_reminder < 1:

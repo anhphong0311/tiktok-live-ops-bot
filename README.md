@@ -22,9 +22,13 @@ Shop Workbench bằng Microsoft Edge đã đăng nhập và gửi vào nhóm `GM
 
 - Attributed GMV cộng dồn từ đầu phiên.
 - Ads Cost và tỷ lệ `Ads Cost / GMV`.
-- Toàn bộ sản phẩm có Attributed GMV lớn hơn 0, gồm tên đầy đủ, ID và GMV;
-  danh sách dài được tách thành nhiều tin nhưng vẫn giữ đủ sản phẩm.
 - Một tổng kết cuối phiên sau khi OFFLINE được xác nhận.
+
+GMV, Ads Cost và tỷ lệ `Ads Cost / GMV` được gửi mỗi 60 phút. Sản phẩm được
+kiểm tra riêng mỗi 5 phút: bot chỉ liệt kê tên, ID, GMV tăng thêm và GMV hiện
+tại của những sản phẩm thực sự tăng doanh số trong đúng cửa sổ đó. Nếu không có
+sản phẩm nào tăng GMV trong 5 phút, bot không gửi tin sản phẩm. Danh sách dài
+được tách thành nhiều tin nhưng không làm mất sản phẩm.
 
 Mốc báo cáo được neo theo giờ bắt đầu hiển thị trên dashboard (60, 120, 180
 phút...), không neo theo thời điểm bot được bật. Khi không đọc được dashboard,
